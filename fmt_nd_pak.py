@@ -127,7 +127,7 @@ def getDXTFormat(fmtName):
 		decFmt = noesis.FOURCC_BC3
 	elif fmtName.count("Bc4"):
 		encFmt = noesis.NOE_ENCODEDXT_BC4
-@@ -1477,50 +1480,53 @@ class PakSubmesh:
+class PakSubmesh:
 
 class PakFile:
 	def __init__(self, bs, args={}):
@@ -181,7 +181,7 @@ class PakFile:
 		offset = bs.readInt64()
 		if offset > 0 or TP1ZeroCondition:
 			pageId = self.getPointerFixupPage(readAddr)
-@@ -1782,60 +1788,108 @@ class PakFile:
+class PakFile:
 			print("Error: Unsupported texture type: " + str(imgFormat) + "  " + fmtName)
 			
 		return NoeTexture(texFileName, width, height, texData, noesis.NOESISTEX_RGBA32)
@@ -292,7 +292,7 @@ class PakFile:
 		m_unk5 = bs.readUInt()						#0x20 no idea
 		m_unk6 = bs.readUInt()						#0x20 no idea
 		m_unk7 = bs.readUInt()						#0x20 no idea
-@@ -2474,50 +2528,53 @@ class PakFile:
+class PakFile:
 								material.setDiffuseColor(params[name])
 							elif numFloats==1 and not setSpecScale and not loadedMetal and not loadedRoughness and lowerName.find("spec") != -1 :
 								setSpecScale = True
@@ -346,7 +346,7 @@ class PakFile:
 						for texNameOrList in self.vrams[vramHash][2]:
 							if isinstance(texNameOrList, list):
 								print("Found merge hash", texNameOrList[0], "for", tex.name)
-@@ -2699,101 +2756,111 @@ def pakLoadModel(data, mdlList):
+def pakLoadModel(data, mdlList):
 		dialogOptions.doLODs = True
 	
 	#Close existing dialog (if open)
