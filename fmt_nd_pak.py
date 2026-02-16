@@ -5,7 +5,7 @@ Version = 'v1.53 (April 1, 2023)'
 
 
 #Options: These are global options that change or enable/disable certain features
-#Option															Effect
+#Option	Effect
 GlobalScale = 100												# Set the scale of the imported model
 NoDialog = False												# Disable the UI dialog window on import
 LoadBaseSkeleton = True											# Attempt to load a base skeleton for every rigged model missing bones
