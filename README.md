@@ -111,6 +111,36 @@ It will let you select a pak file to inject, and will make a modified copy of it
 - You can set up a textures folder for each model you are injecting and quickly switch between them using the Browse button
 - It is always helpful for rigging to use the multi-file loading feature of the plugin to import body, head, hair, jacket, holster etc all together on the same big skeleton
 
+
+## Animation Resource Probing (experimental)
+If you want to inspect animation packs outside Noesis, use `tools/nd_pak_anim_probe.py`:
+
+```bash
+python tools/nd_pak_anim_probe.py anim-elena.pak
+python tools/nd_pak_anim_probe.py anim-elena.pak --json
+python tools/nd_pak_anim_probe.py elena-base.pak anim-elena.pak
+python tools/nd_pak_anim_probe.py anim-elena.pak --search-root /path/to/paks
+```
+
+The probe parses pak pages/login-table entries and reports detected `ANIM_GROUP` resources with heuristic header/string discovery. This is intended to help reverse-engineer Uncharted 4 animation containers.
+
+
+## Troubleshooting: Python indentation errors in Noesis
+If Noesis reports many `IndentationError` or `TabError` messages after installing `fmt_nd_pak.py`, the file was usually copied in a way that changed tab characters.
+
+Use this exact method to install:
+1. Open the file in GitHub and click **Raw**.
+2. Press **Ctrl+S** and save it directly as `fmt_nd_pak.py` (do not copy/paste from the rendered page).
+3. Place the saved file in `Noesis\plugins\python\`.
+4. Remove any old duplicate copies of `fmt_nd_pak.py` from other plugin folders.
+5. Restart Noesis.
+
+Quick local validation (optional):
+```bash
+python -m py_compile fmt_nd_pak.py
+python -m tabnanny fmt_nd_pak.py
+```
+
 ## SUPPORT 
 Use my [nd_pak.bt](https://github.com/alphazolam/nd_pak.bt) binary template to learn more about pak files and edit things like material parameters.
 

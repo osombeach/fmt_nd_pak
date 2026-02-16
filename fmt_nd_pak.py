@@ -15,6 +15,7 @@ ConvertTextures = True											# Convert normal maps to put normal X in the re
 FlipUVs = False													# Flip UVs and flip texture images rightside-up (NOT IMPLEMENTED)
 LoadAllTextures = False											# Load all textures onto a model, rather than only color and normal maps
 ReadColors = False												# Read vertex colors
+LoadAnimations = True										# Attempt to load ANIM_GROUP resources (experimental)
 PrintMaterialParams = False										# Print out all material parameters in the debug log when importing
 texoutExt = ".dds"												# Extension of texture files (change to load textures of a specific type in Blender)
 gameName = "U4"													# Default game name
@@ -48,6 +49,7 @@ class DialogOptions:
 		self.printMaterialParams = PrintMaterialParams
 		self.reparentHelpers = ReparentHelpers
 		self.readColors = ReadColors
+		self.doLoadAnims = LoadAnimations
 		self.baseSkeleton = None
 		self.width = 600
 		self.height = 850
@@ -170,6 +172,7 @@ def encodeImageData(data, width, height, fmtName):
 	if encodeFmt != None:
 		while mipWidth > 2 or mipHeight > 2:
 			mipData = rapi.imageResample(data, width, height, mipWidth, mipHeight)
+
 			try:
 				dxtData = rapi.imageEncodeDXT(mipData, bpp, mipWidth, mipHeight, encodeFmt)
 			except:
@@ -1499,6 +1502,9 @@ class PakFile:
 		self.boneList = None
 		self.boneMap = None
 		self.boneDict = None
+		self.animOffsets = []
+		self.animNameHints = []
+		self.animList = []
 		self.doLODs = False
 		self.needsBasePak = False
 		if args.get("doRead"):
@@ -1804,7 +1810,10 @@ class PakFile:
 		
 		if m_itemType == "JOINT_HIERARCHY":
 			self.jointOffset = (m_resItemOffset, start)
-			
+
+		if m_itemType == "ANIM_GROUP":
+			self.animOffsets.append((m_resItemOffset, start))
+		
 		if m_itemType == "GEOMETRY_1":
 			self.geoOffset = (m_resItemOffset, start)
 			m_numSubMeshDesc = readUIntAt(bs, self.geoOffset[0] + self.geoOffset[1] + ResItemPaddingSz + 8)
@@ -1813,7 +1822,52 @@ class PakFile:
 			for i in range(m_numSubMeshDesc):
 				bs.seek(SubmeshesOffs + 176*i + 104)
 				self.needsBasePak = self.needsBasePak or not not bs.readUInt64()
-	
+
+	def _getAnimNameHints(self, animOffset, start):
+		bs = self.bs
+		nameHints = []
+		base = animOffset + start + ResItemPaddingSz
+		for rel in range(0, 0x180, 8):
+			try:
+				bs.seek(base + rel)
+				textOffs = self.readPointerFixup(True)
+				if textOffs > 0:
+					name = readStringAt(bs, textOffs)
+					if name and name not in nameHints and len(name) > 2 and len(name) < 128 and re.search("[a-zA-Z]", name):
+						nameHints.append(name)
+			except:
+				pass
+		return nameHints
+
+	def readAnimationGroups(self):
+		if not dialogOptions.doLoadAnims:
+			return []
+		self.animNameHints = []
+		for animOffset, start in self.animOffsets:
+			hints = self._getAnimNameHints(animOffset, start)
+			if hints:
+				self.animNameHints.extend(hints)
+		if self.animOffsets:
+			print("Found", len(self.animOffsets), "ANIM_GROUP resource(s)")
+			if self.animNameHints:
+				print("Animation name hints:", self.animNameHints[:16])
+		return self.animNameHints
+
+	def buildNoesisAnims(self):
+		self.animList = []
+		if not self.boneList or not self.animOffsets or not dialogOptions.doLoadAnims:
+			return self.animList
+		names = self.animNameHints or [rapi.getExtensionlessName(rapi.getLocalFileName(self.path or rapi.getInputName()))]
+		baseMats = [bone.getMatrix() for bone in self.boneList]
+		for i, animName in enumerate(names):
+			clipName = rapi.getExtensionlessName(rapi.getLocalFileName(animName)).replace("|", "_")
+			if not clipName:
+				clipName = "anim_" + str(i)
+			self.animList.append(NoeAnim(clipName, self.boneList, 1, list(baseMats), 30.0))
+		if self.animList:
+			print("Created", len(self.animList), "experimental animation clip(s)")
+		return self.animList
+
 	def readPakHeader(self):
 	
 		global dialogOptions, ResItemPaddingSz
@@ -2496,6 +2550,9 @@ class PakFile:
 				bs.seek(place)
 			
 			
+		self.readAnimationGroups()
+		self.buildNoesisAnims()
+
 	def loadGeometry(self, startingBonesCt=0):
 		
 		bs = self.bs
@@ -2721,7 +2778,7 @@ def pakLoadModel(data, mdlList):
 		pak.loadGeometry()
 		
 		if noDialog:
-			if pak.submeshes[0].skinDesc and not pak.boneList and dialogOptions.doLoadBase:
+			if pak.submeshes and pak.submeshes[0].skinDesc and not pak.boneList and dialogOptions.doLoadBase:
 				guessedName = pak.path.replace(".pak", ".skel.pak")
 				for key, value in baseSkeletons[gameName].items():
 					if pak.path.find(key) != -1:
@@ -2751,6 +2808,12 @@ def pakLoadModel(data, mdlList):
 						startingBonesCt = len(pak.boneList) if pak.boneList else 0
 						otherPak.readPak()
 						otherPak.loadGeometry(startingBonesCt if otherPak.jointOffset != None else 0)
+			if pak.animOffsets and not pak.boneList and dialogOptions.doLoadBase:
+				animBaseGuess = pak.path.replace("anim-", "").replace(".pak", "-base.pak") if pak.path else ""
+				if animBaseGuess and rapi.checkFileExists(animBaseGuess):
+					pak.loadBaseSkeleton(animBaseGuess)
+					pak.buildNoesisAnims()
+
 		try:
 			mdl = rapi.rpgConstructModelAndSort()
 		except:
@@ -2764,7 +2827,7 @@ def pakLoadModel(data, mdlList):
 		
 		if pak.boneList:
 			pak.boneList = rapi.multiplyBones(pak.boneList)
-			if dialog and len(dialog.loadItems) > 1:
+			if (not noDialog) and dialog and len(dialog.loadItems) > 1:
 				for bone in pak.boneList:
 					if bone.name.find("root_hair") != -1:
 						bone.parentName = "headb" 
@@ -2772,6 +2835,10 @@ def pakLoadModel(data, mdlList):
 			for mdl in mdlList:
 				mdl.setBones(pak.boneList)
 				
+			if pak.animList and pak.boneList:
+				for mdl in mdlList:
+					mdl.setAnims(pak.animList)
+
 		if pak.userStreams:
 			for meshIdx, userStreamList in pak.userStreams.items():
 				if userStreamList and meshIdx < len(mdl.meshes):
