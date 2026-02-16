@@ -1990,6 +1990,15 @@ class PakFile:
 				print("Created", len(self.animList), "animation clip(s),", decodedCt, "decoded with keyframes")
 			else:
 				print("Created", len(self.animList), "placeholder animation clip(s) (no decoded tracks found)")
+		names = self.animNameHints or [rapi.getExtensionlessName(rapi.getLocalFileName(self.path or rapi.getInputName()))]
+		baseMats = [bone.getMatrix() for bone in self.boneList]
+		for i, animName in enumerate(names):
+			clipName = rapi.getExtensionlessName(rapi.getLocalFileName(animName)).replace("|", "_")
+			if not clipName:
+				clipName = "anim_" + str(i)
+			self.animList.append(NoeAnim(clipName, self.boneList, 1, list(baseMats), 30.0))
+		if self.animList:
+			print("Created", len(self.animList), "experimental animation clip(s)")
 		return self.animList
 
 	def readPakHeader(self):
