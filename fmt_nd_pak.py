@@ -15,6 +15,7 @@ ConvertTextures = True											# Convert normal maps to put normal X in the re
 FlipUVs = False													# Flip UVs and flip texture images rightside-up (NOT IMPLEMENTED)
 LoadAllTextures = False											# Load all textures onto a model, rather than only color and normal maps
 ReadColors = False												# Read vertex colors
+LoadAnimations = True										# Attempt to load ANIM_GROUP resources (experimental)
 PrintMaterialParams = False										# Print out all material parameters in the debug log when importing
 texoutExt = ".dds"												# Extension of texture files (change to load textures of a specific type in Blender)
 gameName = "U4"													# Default game name
@@ -48,6 +49,7 @@ class DialogOptions:
 		self.printMaterialParams = PrintMaterialParams
 		self.reparentHelpers = ReparentHelpers
 		self.readColors = ReadColors
+		self.doLoadAnims = LoadAnimations
 		self.baseSkeleton = None
 		self.width = 600
 		self.height = 850
@@ -170,6 +172,7 @@ def encodeImageData(data, width, height, fmtName):
 	if encodeFmt != None:
 		while mipWidth > 2 or mipHeight > 2:
 			mipData = rapi.imageResample(data, width, height, mipWidth, mipHeight)
+
 			try:
 				dxtData = rapi.imageEncodeDXT(mipData, bpp, mipWidth, mipHeight, encodeFmt)
 			except:
@@ -1499,6 +1502,9 @@ class PakFile:
 		self.boneList = None
 		self.boneMap = None
 		self.boneDict = None
+		self.animOffsets = []
+		self.animNameHints = []
+		self.animList = []
 		self.doLODs = False
 		self.needsBasePak = False
 		if args.get("doRead"):
@@ -1804,7 +1810,10 @@ class PakFile:
 		
 		if m_itemType == "JOINT_HIERARCHY":
 			self.jointOffset = (m_resItemOffset, start)
-			
+
+		if m_itemType == "ANIM_GROUP":
+			self.animOffsets.append((m_resItemOffset, start))
+		
 		if m_itemType == "GEOMETRY_1":
 			self.geoOffset = (m_resItemOffset, start)
 			m_numSubMeshDesc = readUIntAt(bs, self.geoOffset[0] + self.geoOffset[1] + ResItemPaddingSz + 8)
@@ -1813,7 +1822,176 @@ class PakFile:
 			for i in range(m_numSubMeshDesc):
 				bs.seek(SubmeshesOffs + 176*i + 104)
 				self.needsBasePak = self.needsBasePak or not not bs.readUInt64()
-	
+
+	def _getAnimNameHints(self, animOffset, start):
+		bs = self.bs
+		nameHints = []
+		base = animOffset + start + ResItemPaddingSz
+		for rel in range(0, 0x180, 8):
+			try:
+				bs.seek(base + rel)
+				textOffs = self.readPointerFixup(True)
+				if textOffs > 0:
+					name = readStringAt(bs, textOffs)
+					if name and name not in nameHints and len(name) > 2 and len(name) < 128 and re.search("[a-zA-Z]", name):
+						nameHints.append(name)
+			except:
+				pass
+		return nameHints
+
+	def readAnimationGroups(self):
+		if not dialogOptions.doLoadAnims:
+			return []
+		self.animNameHints = []
+		for animOffset, start in self.animOffsets:
+			hints = self._getAnimNameHints(animOffset, start)
+			if hints:
+				self.animNameHints.extend(hints)
+		if self.animOffsets:
+			print("Found", len(self.animOffsets), "ANIM_GROUP resource(s)")
+			if self.animNameHints:
+				print("Animation name hints:", self.animNameHints[:16])
+		return self.animNameHints
+
+	def _getResourceEnd(self, resOffset, pageStart):
+		pageId = None
+		for i, pageEntry in enumerate(self.pakPageEntries):
+			if pageEntry[0] == pageStart:
+				pageId = i
+				break
+		if pageId is None:
+			return self.bs.getSize()
+
+		nextOffset = None
+		for loginResItem in self.pakLoginTable:
+			if loginResItem.page == pageId and loginResItem.offset > resOffset:
+				nextOffset = loginResItem.offset if nextOffset is None else min(nextOffset, loginResItem.offset)
+
+		if nextOffset is not None:
+			return pageStart + nextOffset
+
+		# Fallback to declared page data size.
+		pageSize = self.pakPageEntries[pageId][1]
+		if pageSize > 0:
+			return pageStart + pageSize
+		return self.bs.getSize()
+
+	def _tryDecodeUncompressedAnim(self, animOffset, start, clipName):
+		if not self.boneList:
+			return None
+
+		bs = self.bs
+		boneCt = len(self.boneList)
+		animStart = animOffset + start
+		animDataStart = animStart + ResItemPaddingSz
+		animEnd = self._getResourceEnd(animOffset, start)
+		animEnd = max(animEnd, animDataStart)
+
+		best = None
+		for fcRel in range(0, 0x140, 4):
+			frameCountOffs = animDataStart + fcRel
+			if frameCountOffs + 4 >= animEnd:
+				break
+			bs.seek(frameCountOffs)
+			frameCt = bs.readUInt()
+			if frameCt < 2 or frameCt > 1200:
+				continue
+
+			for ptrRel in range(0, 0x180, 8):
+				ptrAddr = animDataStart + ptrRel
+				if ptrAddr + 8 >= animEnd:
+					break
+				bs.seek(ptrAddr)
+				trackStart = self.readPointerFixup(True)
+				if trackStart <= 0 or trackStart >= animEnd:
+					continue
+
+				bytesPerTransform = 32 # quat.xyzw + pos.xyz + pad
+				required = frameCt * boneCt * bytesPerTransform
+				if trackStart + required > animEnd:
+					continue
+
+				# Sanity check first transforms.
+				ok = True
+				bs.seek(trackStart)
+				checkCt = min(frameCt * boneCt, 24)
+				for _ in range(checkCt):
+					qx, qy, qz, qw = bs.readFloat(), bs.readFloat(), bs.readFloat(), bs.readFloat()
+					px, py, pz = bs.readFloat(), bs.readFloat(), bs.readFloat()
+					qn = qx*qx + qy*qy + qz*qz + qw*qw
+					if qn < 0.1 or qn > 4.0 or abs(px) > 1.0e5 or abs(py) > 1.0e5 or abs(pz) > 1.0e5:
+						ok = False
+						break
+					bs.seek(4, 1)
+				if not ok:
+					continue
+
+				best = (frameCt, trackStart)
+				break
+			if best:
+				break
+
+		if not best:
+			return None
+
+		frameCt, trackStart = best
+		fps = 30.0
+		for rel in range(0, 0x80, 4):
+			addr = animDataStart + rel
+			if addr + 4 < animEnd:
+				bs.seek(addr)
+				v = bs.readFloat()
+				if v in (24.0, 25.0, 30.0, 48.0, 50.0, 60.0):
+					fps = v
+					break
+
+		matList = []
+		bs.seek(trackStart)
+		for _frame in range(frameCt):
+			for _bone in range(boneCt):
+				qx, qy, qz, qw = bs.readFloat(), bs.readFloat(), bs.readFloat(), bs.readFloat()
+				px, py, pz = bs.readFloat(), bs.readFloat(), bs.readFloat()
+				bs.seek(4, 1)
+				mat = NoeQuat((qx, qy, qz, qw)).transpose().toMat43()
+				mat[3] = NoeVec3((px, py, pz)) * GlobalScale
+				matList.append(mat)
+
+		print("Decoded animation", clipName, "with", frameCt, "frame(s) at", fps, "fps")
+		return NoeAnim(clipName, self.boneList, frameCt, matList, fps)
+
+	def buildNoesisAnims(self):
+		self.animList = []
+		if not self.boneList or not self.animOffsets or not dialogOptions.doLoadAnims:
+			return self.animList
+
+		names = self.animNameHints or [rapi.getExtensionlessName(rapi.getLocalFileName(self.path or rapi.getInputName()))]
+		decodedCt = 0
+		for i, animTuple in enumerate(self.animOffsets):
+			animName = names[i] if i < len(names) else (names[0] + "_" + str(i))
+			clipName = rapi.getExtensionlessName(rapi.getLocalFileName(animName)).replace("|", "_")
+			if not clipName:
+				clipName = "anim_" + str(i)
+			decoded = self._tryDecodeUncompressedAnim(animTuple[0], animTuple[1], clipName)
+			if decoded:
+				decodedCt += 1
+				self.animList.append(decoded)
+
+		if not self.animList:
+			# Fallback: bind-pose single-frame clips (for identification/debug only)
+			baseMats = [bone.getMatrix() for bone in self.boneList]
+			for i, animName in enumerate(names):
+				clipName = rapi.getExtensionlessName(rapi.getLocalFileName(animName)).replace("|", "_")
+				if not clipName:
+					clipName = "anim_" + str(i)
+				self.animList.append(NoeAnim(clipName, self.boneList, 1, list(baseMats), 30.0))
+
+		if self.animList:
+			if decodedCt:
+				print("Created", len(self.animList), "animation clip(s),", decodedCt, "decoded with keyframes")
+			else:
+				print("Created", len(self.animList), "placeholder animation clip(s) (no decoded tracks found)")
+		return self.animList
+
 	def readPakHeader(self):
 	
 		global dialogOptions, ResItemPaddingSz
@@ -2496,6 +2674,9 @@ class PakFile:
 				bs.seek(place)
 			
 			
+		self.readAnimationGroups()
+		self.buildNoesisAnims()
+
 	def loadGeometry(self, startingBonesCt=0):
 		
 		bs = self.bs
@@ -2721,7 +2902,7 @@ def pakLoadModel(data, mdlList):
 		pak.loadGeometry()
 		
 		if noDialog:
-			if pak.submeshes[0].skinDesc and not pak.boneList and dialogOptions.doLoadBase:
+			if pak.submeshes and pak.submeshes[0].skinDesc and not pak.boneList and dialogOptions.doLoadBase:
 				guessedName = pak.path.replace(".pak", ".skel.pak")
 				for key, value in baseSkeletons[gameName].items():
 					if pak.path.find(key) != -1:
@@ -2751,6 +2932,12 @@ def pakLoadModel(data, mdlList):
 						startingBonesCt = len(pak.boneList) if pak.boneList else 0
 						otherPak.readPak()
 						otherPak.loadGeometry(startingBonesCt if otherPak.jointOffset != None else 0)
+			if pak.animOffsets and not pak.boneList and dialogOptions.doLoadBase:
+				animBaseGuess = pak.path.replace("anim-", "").replace(".pak", "-base.pak") if pak.path else ""
+				if animBaseGuess and rapi.checkFileExists(animBaseGuess):
+					pak.loadBaseSkeleton(animBaseGuess)
+					pak.buildNoesisAnims()
+
 		try:
 			mdl = rapi.rpgConstructModelAndSort()
 		except:
@@ -2764,7 +2951,7 @@ def pakLoadModel(data, mdlList):
 		
 		if pak.boneList:
 			pak.boneList = rapi.multiplyBones(pak.boneList)
-			if dialog and len(dialog.loadItems) > 1:
+			if (not noDialog) and dialog and len(dialog.loadItems) > 1:
 				for bone in pak.boneList:
 					if bone.name.find("root_hair") != -1:
 						bone.parentName = "headb" 
@@ -2772,6 +2959,10 @@ def pakLoadModel(data, mdlList):
 			for mdl in mdlList:
 				mdl.setBones(pak.boneList)
 				
+			if pak.animList and pak.boneList:
+				for mdl in mdlList:
+					mdl.setAnims(pak.animList)
+
 		if pak.userStreams:
 			for meshIdx, userStreamList in pak.userStreams.items():
 				if userStreamList and meshIdx < len(mdl.meshes):
