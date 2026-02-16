@@ -75,7 +75,7 @@ def registerNoesisTypes():
 	noesis.setHandlerTypeCheck(handle, pakCheckType)
 	noesis.setHandlerLoadModel(handle, pakLoadModel)
 	noesis.setHandlerWriteModel(handle, pakWriteModel)
-@@ -148,50 +150,51 @@ def generateDummyTexture4px(rgbaColor, name="Dummy"):
+def generateDummyTexture4px(rgbaColor, name="Dummy"):
 	imageByteList = []
 	for i in range(16):
 		imageByteList.extend(rgbaColor)
