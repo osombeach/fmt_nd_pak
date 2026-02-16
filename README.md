@@ -124,6 +124,8 @@ python tools/nd_pak_anim_probe.py anim-elena.pak --search-root /path/to/paks
 
 The probe parses pak pages/login-table entries and reports detected `ANIM_GROUP` resources with heuristic header/string discovery. This is intended to help reverse-engineer Uncharted 4 animation containers.
 
+`fmt_nd_pak.py` now also attempts an **experimental uncompressed track decode** for ANIM_GROUP clips. If decode fails for a given file, it falls back to placeholder 1-frame clips so clip discovery can still be verified.
+
 
 ## Troubleshooting: Python indentation errors in Noesis
 If Noesis reports many `IndentationError` or `TabError` messages after installing `fmt_nd_pak.py`, the file was usually copied in a way that changed tab characters.
